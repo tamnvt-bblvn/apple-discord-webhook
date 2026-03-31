@@ -1,141 +1,114 @@
 const express = require("express");
 const axios = require("axios");
 const jwt = require("jsonwebtoken");
-const app = express();
+const { google } = require("googleapis");
+const fs = require("fs");
 
+const app = express();
 app.use(express.json());
 
-// Cấu hình URL Webhook Discord của anh
-const DISCORD_WEBHOOK_URL =
-  "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN";
+// Cấu hình ID của Google Sheet (Lấy từ URL của sheet)
+const SPREADSHEET_ID = "1O9KGxJuVVQdw6A4QSusxJiGQ9x4sARYHiuecnWgTp0g";
+const RANGE = "A2:B"; // Đọc từ cột A đến B, bỏ qua tiêu đề hàng 1
 
-/**
- * Hàm hỗ trợ giải mã JWT (Apple signedPayload)
- * mà không cần verify signature (để test nhanh và nhẹ)
- */
-const decodeApplePayload = (signedPayload) => {
+let webhookMapping = {};
+
+// Hàm xác thực và đọc dữ liệu từ Google Sheet
+async function refreshMapping() {
   try {
-    return jwt.decode(signedPayload);
-  } catch (e) {
-    console.error("Lỗi giải mã JWT:", e.message);
-    return null;
-  }
-};
+    const auth = new google.auth.GoogleAuth({
+      keyFile: "credentials.json", // File anh vừa tải về
+      scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+    });
 
-app.post("/apple-webhook", async (req, res) => {
-  try {
-    const payload = req.body;
+    const sheets = google.sheets({ version: "v4", auth });
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: RANGE,
+    });
 
-    // 1. TRƯỜNG HỢP: Apple Test Webhook (Ping)
-    if (payload.data && payload.data.type === "webhookPingCreated") {
-      console.log("Apple đang ping test hệ thống!");
-      await sendToDiscord({
-        title: "🔔 Apple Webhook Connectivity",
-        description: "Kết nối thành công! Apple đã 'gõ cửa' server của anh.",
-        color: 3447003, // Màu xanh dương
+    const rows = response.data.values;
+    const newMapping = {};
+
+    if (rows && rows.length) {
+      rows.forEach((row, index) => {
+        const appKey = row[0]?.trim().toLowerCase();
+        const webhookUrl = row[1]?.trim();
+
+        console.log(
+          `Dòng ${index + 2}: App=${appKey}, Webhook=${webhookUrl ? "OK" : "Trống"}`,
+        );
+
+        if (appKey && webhookUrl) {
+          newMapping[appKey] = webhookUrl;
+        }
       });
-      return res.status(200).send("OK");
     }
 
-    // 2. TRƯỜNG HỢP: Sự kiện giao dịch thật (V2)
-    if (payload.signedPayload) {
-      const decoded = decodeApplePayload(payload.signedPayload);
-      if (!decoded) return res.status(400).send("Invalid Payload");
-
-      const type = decoded.notificationType;
-      const subtype = decoded.subtype || "";
-      const env = decoded.data?.environment || "Unknown";
-
-      // Giải mã tiếp lớp bên trong để lấy thông tin sản phẩm
-      let transactionInfo = {};
-      if (decoded.data?.signedTransactionInfo) {
-        transactionInfo =
-          decodeApplePayload(decoded.data.signedTransactionInfo) || {};
-      }
-
-      // Xác định màu sắc cho Discord dựa trên loại event
-      let embedColor = 3066993; // Mặc định xanh lá (Thành công)
-      if (
-        type.includes("FAIL") ||
-        type.includes("EXPIRED") ||
-        type === "REFUND"
-      ) {
-        embedColor = 15158332; // Màu đỏ (Cảnh báo/Lỗi)
-      } else if (type === "SUBSCRIBED" || type === "DID_RENEW") {
-        embedColor = 3066993; // Màu xanh lá
-      }
-
-      // Tạo nội dung chi tiết cho Discord
-      const discordEmbed = {
-        title: `🍎 Apple Billing: ${type}`,
-        description: subtype ? `Hành động: **${subtype}**` : "Sự kiện hệ thống",
-        color: embedColor,
-        fields: [
-          {
-            name: "Product ID",
-            value: `\`${transactionInfo.productId || "N/A"}\``,
-            inline: true,
-          },
-          { name: "Environment", value: env, inline: true },
-          {
-            name: "Transaction ID",
-            value: transactionInfo.transactionId || "N/A",
-            inline: false,
-          },
-          {
-            name: "Bundle ID",
-            value: decoded.data?.bundleId || "N/A",
-            inline: true,
-          },
-          {
-            name: "Purchase Date",
-            value: transactionInfo.purchaseDate
-              ? new Date(transactionInfo.purchaseDate).toLocaleString("vi-VN")
-              : "N/A",
-            inline: false,
-          },
-        ],
-        footer: { text: `Version 2.0 • ID: ${decoded.notificationUUID}` },
-        timestamp: new Date(),
-      };
-
-      await sendToDiscord(discordEmbed);
-      console.log(`Forwarded event ${type} to Discord.`);
-      return res.status(200).send("Received");
-    }
-
-    // Nếu không thuộc các loại trên
-    res.status(400).send("Unsupported format");
-  } catch (error) {
-    console.error("Lỗi server:", error.message);
-    // Luôn trả về 200 để Apple không bắn lại liên tục nếu đây chỉ là lỗi hiển thị
-    res.status(200).send("Error logged");
-  }
-});
-
-/**
- * Hàm gửi dữ liệu sang Discord
- */
-async function sendToDiscord(embedData) {
-  try {
-    await axios.post(
-      DISCORD_WEBHOOK_URL,
-      {
-        username: "Apple Store Notify",
-        avatar_url:
-          "https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg",
-        embeds: [embedData],
-      },
-      { timeout: 8000 },
+    webhookMapping = newMapping;
+    console.log(
+      "✅ API: Đã cập nhật mapping từ Google Sheet:",
+      Object.keys(webhookMapping),
     );
   } catch (err) {
-    console.error("Không thể gửi sang Discord:", err.message);
+    console.error("❌ Lỗi Google API:", err.message);
   }
 }
 
-const PORT = process.env.PORT || 3003;
-app.listen(PORT, () => {
-  console.log(`--- Server Forwarder Apple -> Discord ---`);
-  console.log(`Đang chạy tại port: ${PORT}`);
-  console.log(`Webhook URL: http://localhost:${PORT}/apple-webhook`);
+// Cập nhật mỗi 1 phút cho máu (API chịu tải tốt hơn link Pub)
+setInterval(refreshMapping, 60000);
+refreshMapping();
+
+app.post("/apple-webhook", async (req, res) => {
+  try {
+    let appKey = req.query.app;
+    if (!appKey) return res.status(200).send("Missing app param");
+
+    appKey = decodeURIComponent(appKey).replace(/-/g, " ").toLowerCase();
+    const discordWebhookUrl = webhookMapping[appKey];
+
+    if (!discordWebhookUrl) {
+      console.log(`⚠️ Không thấy mapping cho: ${appKey}`);
+      return res.status(200).send("Not mapped");
+    }
+
+    // --- PHẦN GIẢI MÃ AN TOÀN ---
+    const payload = req.body;
+    // Decode lớp 1
+    const decoded = jwt.decode(payload.signedPayload) || {};
+
+    // Decode lớp 2 (Nằm trong data.signedTransactionInfo)
+    const transactionInfo = decoded.data?.signedTransactionInfo
+      ? jwt.decode(decoded.data.signedTransactionInfo)
+      : {};
+
+    // Chuẩn bị dữ liệu hiển thị
+    const notificationType = decoded.notificationType || "UNKNOWN_EVENT";
+    const productId = transactionInfo.productId || "N/A";
+    const environment = decoded.data?.environment || "N/A";
+
+    await axios.post(discordWebhookUrl, {
+      username: `Apple Store [${appKey}]`,
+      embeds: [
+        {
+          title: `🍎 Thông báo từ ${appKey.toUpperCase()}`,
+          description: `Sự kiện: **${notificationType}**`,
+          color: 3066993,
+          fields: [
+            { name: "Sản phẩm", value: productId, inline: true },
+            { name: "Môi trường", value: environment, inline: true },
+          ],
+          timestamp: new Date(),
+        },
+      ],
+    });
+
+    console.log(`🚀 Đã bắn tin thành công cho ${appKey} (${notificationType})`);
+    res.status(200).send("OK");
+  } catch (error) {
+    console.error("Lỗi:", error.message);
+    res.status(200).send("Error");
+  }
 });
+
+app.listen(3004, () => console.log("Server API running on port 3004"));
