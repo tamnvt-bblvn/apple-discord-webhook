@@ -66,47 +66,128 @@ app.post("/apple-webhook", async (req, res) => {
 
     appKey = decodeURIComponent(appKey).replace(/-/g, " ").toLowerCase();
     const discordWebhookUrl = webhookMapping[appKey];
+    if (!discordWebhookUrl) return res.status(200).send("Not mapped");
 
-    if (!discordWebhookUrl) {
-      console.log(`⚠️ Không thấy mapping cho: ${appKey}`);
-      return res.status(200).send("Not mapped");
+    const payload = req.body;
+
+    // DEBUG (QUAN TRỌNG)
+    console.log("📦 RAW:", JSON.stringify(payload, null, 2));
+
+    if (!payload.data) return res.status(200).send("No data");
+
+    const { type, attributes = {} } = payload.data;
+
+    let title = `🍎 ${appKey.toUpperCase()}`;
+    let color = 3447003;
+    let fields = [];
+
+    // =========================
+    // 🔍 WEBHOOK PING (TEST)
+    if (payload.data?.type === "webhookPingCreated") {
+      const timestamp = payload.data.attributes?.timestamp;
+
+      embedData.title = `🔍 Webhook Test: ${appKey.toUpperCase()}`;
+      embedData.description =
+        `Apple vừa gửi ping để kiểm tra webhook\n\n` +
+        `🆔 ID: \`${payload.data.id}\`\n` +
+        `⏱ Time: ${timestamp || "N/A"}`;
+
+      embedData.color = 3447003; // xanh dương
+
+      await axios.post(discordWebhookUrl, {
+        username: "Apple Bot",
+        embeds: [
+          {
+            ...embedData,
+            timestamp: new Date(),
+            footer: { text: "Apple Webhook Ping" },
+          },
+        ],
+      });
+
+      return res.status(200).send("Ping OK");
     }
 
-    // --- PHẦN GIẢI MÃ AN TOÀN ---
-    const payload = req.body;
-    // Decode lớp 1
-    const decoded = jwt.decode(payload.signedPayload) || {};
+    // =========================
+    // 📦 BUILD
+    // =========================
+    if (type === "builds") {
+      const state = attributes.processingState;
 
-    // Decode lớp 2 (Nằm trong data.signedTransactionInfo)
-    const transactionInfo = decoded.data?.signedTransactionInfo
-      ? jwt.decode(decoded.data.signedTransactionInfo)
-      : {};
+      title = "📦 Build Update";
 
-    // Chuẩn bị dữ liệu hiển thị
-    const notificationType = decoded.notificationType || "UNKNOWN_EVENT";
-    const productId = transactionInfo.productId || "N/A";
-    const environment = decoded.data?.environment || "N/A";
+      if (state === "VALID") {
+        color = 3066993; // xanh
+      } else if (state === "FAILED" || state === "INVALID") {
+        color = 15158332; // đỏ
+      }
 
+      fields = [
+        { name: "Trạng thái", value: state || "N/A", inline: true },
+        { name: "Version", value: attributes.version || "N/A", inline: true },
+        { name: "Build", value: attributes.buildNumber || "N/A", inline: true },
+      ];
+    }
+
+    // =========================
+    // 🚀 APP RELEASE
+    // =========================
+    else if (type === "appStoreVersions") {
+      const state = attributes.appStoreState;
+
+      title = "🚀 App Store Release";
+
+      if (state === "READY_FOR_SALE") {
+        color = 3066993;
+      } else if (state === "REJECTED") {
+        color = 15158332;
+      }
+
+      fields = [
+        { name: "Trạng thái", value: state || "N/A", inline: true },
+        {
+          name: "Version",
+          value: attributes.versionString || "N/A",
+          inline: true,
+        },
+      ];
+    }
+
+    // =========================
+    // 🧪 TESTFLIGHT (fallback)
+    // =========================
+    else if (
+      type === "betaBuildLocalizations" ||
+      type === "betaGroups" ||
+      type === "buildBetaDetails"
+    ) {
+      title = "🧪 TestFlight Update";
+
+      fields = [{ name: "Type", value: type, inline: true }];
+    } else {
+      // ignore event rác
+      return res.status(200).send("Ignored");
+    }
+
+    // =========================
+    // 🚀 SEND DISCORD
+    // =========================
     await axios.post(discordWebhookUrl, {
-      username: `Apple Store [${appKey}]`,
+      username: "Apple Bot",
       embeds: [
         {
-          title: `🍎 Thông báo từ ${appKey.toUpperCase()}`,
-          description: `Sự kiện: **${notificationType}**`,
-          color: 3066993,
-          fields: [
-            { name: "Sản phẩm", value: productId, inline: true },
-            { name: "Môi trường", value: environment, inline: true },
-          ],
+          title,
+          color,
+          fields,
           timestamp: new Date(),
+          footer: { text: "Apple Webhook" },
         },
       ],
     });
 
-    console.log(`🚀 Đã bắn tin thành công cho ${appKey} (${notificationType})`);
     res.status(200).send("OK");
-  } catch (error) {
-    console.error("Lỗi:", error.message);
+  } catch (err) {
+    console.error("❌ Webhook error:", err.message);
     res.status(200).send("Error");
   }
 });
