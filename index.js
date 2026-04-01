@@ -1,23 +1,22 @@
 const express = require("express");
 const axios = require("axios");
-const jwt = require("jsonwebtoken");
 const { google } = require("googleapis");
-const fs = require("fs");
 
 const app = express();
 app.use(express.json());
 
-// Cấu hình ID của Google Sheet (Lấy từ URL của sheet)
 const SPREADSHEET_ID = "1O9KGxJuVVQdw6A4QSusxJiGQ9x4sARYHiuecnWgTp0g";
-const RANGE = "A2:B"; // Đọc từ cột A đến B, bỏ qua tiêu đề hàng 1
+const RANGE = "A2:B";
 
 let webhookMapping = {};
 
-// Hàm xác thực và đọc dữ liệu từ Google Sheet
+// =========================
+// 📊 LOAD GOOGLE SHEET
+// =========================
 async function refreshMapping() {
   try {
     const auth = new google.auth.GoogleAuth({
-      keyFile: "credentials.json", // File anh vừa tải về
+      keyFile: "credentials.json",
       scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
     });
 
@@ -30,39 +29,68 @@ async function refreshMapping() {
     const rows = response.data.values;
     const newMapping = {};
 
-    if (rows && rows.length) {
-      rows.forEach((row, index) => {
-        const appKey = row[0]?.trim().toLowerCase();
-        const webhookUrl = row[1]?.trim();
-
-        console.log(
-          `Dòng ${index + 2}: App=${appKey}, Webhook=${webhookUrl ? "OK" : "Trống"}`,
-        );
-
-        if (appKey && webhookUrl) {
-          newMapping[appKey] = webhookUrl;
-        }
-      });
-    }
+    rows?.forEach((row) => {
+      const appKey = row[0]?.trim().toLowerCase();
+      const webhookUrl = row[1]?.trim();
+      if (appKey && webhookUrl) {
+        newMapping[appKey] = webhookUrl;
+      }
+    });
 
     webhookMapping = newMapping;
-    console.log(
-      "✅ API: Đã cập nhật mapping từ Google Sheet:",
-      Object.keys(webhookMapping),
-    );
+    console.log("✅ Mapping:", Object.keys(webhookMapping));
   } catch (err) {
-    console.error("❌ Lỗi Google API:", err.message);
+    console.error("❌ Google API:", err.message);
   }
 }
 
-// Cập nhật mỗi 1 phút cho máu (API chịu tải tốt hơn link Pub)
 setInterval(refreshMapping, 60000);
 refreshMapping();
 
+// =========================
+// 🎯 STATE MAPPING
+// =========================
+function mapAppState(state) {
+  switch (state) {
+    case "READY_FOR_SALE":
+      return { msg: "🚀 App đã LIVE trên App Store", color: 3066993 };
+
+    case "IN_REVIEW":
+    case "WAITING_FOR_REVIEW":
+      return { msg: "🔍 Đang được Apple review", color: 3447003 };
+
+    case "READY_FOR_REVIEW":
+      return { msg: "📤 Sẵn sàng gửi review", color: 15844367 };
+
+    case "PROCESSING_FOR_APP_STORE":
+      return { msg: "⚙️ Apple đang xử lý build", color: 10181046 };
+
+    case "REJECTED":
+    case "METADATA_REJECTED":
+    case "DEVELOPER_REJECTED":
+      return { msg: "❌ Bị Apple từ chối", color: 15158332 };
+
+    case "INVALID_BINARY":
+      return { msg: "💣 Build lỗi (invalid binary)", color: 15158332 };
+
+    case "PENDING_DEVELOPER_RELEASE":
+      return { msg: "⏳ Chờ dev release", color: 15844367 };
+
+    case "PENDING_APPLE_RELEASE":
+      return { msg: "⏳ Apple sẽ tự động release", color: 15844367 };
+
+    default:
+      return { msg: `ℹ️ ${state}`, color: 3447003 };
+  }
+}
+
+// =========================
+// 🚀 WEBHOOK
+// =========================
 app.post("/apple-webhook", async (req, res) => {
   try {
     let appKey = req.query.app;
-    if (!appKey) return res.status(200).send("Missing app param");
+    if (!appKey) return res.status(200).send("Missing app");
 
     appKey = decodeURIComponent(appKey).replace(/-/g, " ").toLowerCase();
     const discordWebhookUrl = webhookMapping[appKey];
@@ -70,39 +98,37 @@ app.post("/apple-webhook", async (req, res) => {
 
     const payload = req.body;
 
-    // DEBUG (QUAN TRỌNG)
     console.log("📦 RAW:", JSON.stringify(payload, null, 2));
 
     if (!payload.data) return res.status(200).send("No data");
 
     const { type, attributes = {} } = payload.data;
 
-    let title = `🍎 ${appKey.toUpperCase()}`;
-    let color = 3447003;
-    let fields = [];
+    let embed = {
+      title: `🍎 ${appKey.toUpperCase()}`,
+      color: 3447003,
+      fields: [],
+      timestamp: new Date(),
+      footer: { text: "Apple Webhook" },
+    };
 
     // =========================
-    // 🔍 WEBHOOK PING (TEST)
-    if (payload.data?.type === "webhookPingCreated") {
-      const timestamp = payload.data.attributes?.timestamp;
-
-      embedData.title = `🔍 Webhook Test: ${appKey.toUpperCase()}`;
-      embedData.description =
-        `Apple vừa gửi ping để kiểm tra webhook\n\n` +
-        `🆔 ID: \`${payload.data.id}\`\n` +
-        `⏱ Time: ${timestamp || "N/A"}`;
-
-      embedData.color = 3447003; // xanh dương
+    // 🔍 PING
+    // =========================
+    if (type === "webhookPingCreated") {
+      embed.title = "🔍 Webhook Test";
+      embed.fields = [
+        { name: "Status", value: "✅ OK", inline: true },
+        {
+          name: "Time",
+          value: attributes.timestamp || "N/A",
+          inline: true,
+        },
+      ];
 
       await axios.post(discordWebhookUrl, {
         username: "Apple Bot",
-        embeds: [
-          {
-            ...embedData,
-            timestamp: new Date(),
-            footer: { text: "Apple Webhook Ping" },
-          },
-        ],
+        embeds: [embed],
       });
 
       return res.status(200).send("Ping OK");
@@ -114,37 +140,37 @@ app.post("/apple-webhook", async (req, res) => {
     if (type === "builds") {
       const state = attributes.processingState;
 
-      title = "📦 Build Update";
+      embed.title = "📦 Build Update";
 
-      if (state === "VALID") {
-        color = 3066993; // xanh
-      } else if (state === "FAILED" || state === "INVALID") {
-        color = 15158332; // đỏ
-      }
+      if (state === "VALID") embed.color = 3066993;
+      else if (["FAILED", "INVALID"].includes(state)) embed.color = 15158332;
 
-      fields = [
-        { name: "Trạng thái", value: state || "N/A", inline: true },
+      embed.fields = [
+        { name: "Status", value: state || "N/A", inline: true },
         { name: "Version", value: attributes.version || "N/A", inline: true },
-        { name: "Build", value: attributes.buildNumber || "N/A", inline: true },
+        {
+          name: "Build",
+          value: attributes.buildNumber || "N/A",
+          inline: true,
+        },
       ];
     }
 
     // =========================
-    // 🚀 APP RELEASE
+    // 🚀 RELEASE
     // =========================
     else if (type === "appStoreVersions") {
-      const state = attributes.appStoreState;
+      // 🔥 SUPPORT BOTH (IMPORTANT)
+      const state = attributes.appStoreState || attributes.appVersionState;
 
-      title = "🚀 App Store Release";
+      const mapped = mapAppState(state);
 
-      if (state === "READY_FOR_SALE") {
-        color = 3066993;
-      } else if (state === "REJECTED") {
-        color = 15158332;
-      }
+      embed.title = "🚀 App Store Update";
+      embed.color = mapped.color;
 
-      fields = [
-        { name: "Trạng thái", value: state || "N/A", inline: true },
+      embed.fields = [
+        { name: "Status", value: mapped.msg, inline: false },
+        { name: "Raw", value: state || "N/A", inline: true },
         {
           name: "Version",
           value: attributes.versionString || "N/A",
@@ -154,18 +180,16 @@ app.post("/apple-webhook", async (req, res) => {
     }
 
     // =========================
-    // 🧪 TESTFLIGHT (fallback)
+    // 🧪 TESTFLIGHT (optional)
     // =========================
     else if (
-      type === "betaBuildLocalizations" ||
-      type === "betaGroups" ||
-      type === "buildBetaDetails"
+      ["betaBuildLocalizations", "betaGroups", "buildBetaDetails"].includes(
+        type,
+      )
     ) {
-      title = "🧪 TestFlight Update";
-
-      fields = [{ name: "Type", value: type, inline: true }];
+      embed.title = "🧪 TestFlight Update";
+      embed.fields = [{ name: "Type", value: type, inline: true }];
     } else {
-      // ignore event rác
       return res.status(200).send("Ignored");
     }
 
@@ -174,15 +198,7 @@ app.post("/apple-webhook", async (req, res) => {
     // =========================
     await axios.post(discordWebhookUrl, {
       username: "Apple Bot",
-      embeds: [
-        {
-          title,
-          color,
-          fields,
-          timestamp: new Date(),
-          footer: { text: "Apple Webhook" },
-        },
-      ],
+      embeds: [embed],
     });
 
     res.status(200).send("OK");
@@ -192,4 +208,4 @@ app.post("/apple-webhook", async (req, res) => {
   }
 });
 
-app.listen(3004, () => console.log("Server API running on port 3004"));
+app.listen(3004, () => console.log("🚀 Server running on 3004"));
