@@ -53,31 +53,40 @@ refreshMapping();
 function mapAppState(state) {
   switch (state) {
     case "READY_FOR_SALE":
-      return { msg: "🚀 App đã LIVE trên App Store", color: 3066993 };
+      return { msg: "🚀 App is LIVE on the App Store", color: 3066993 };
 
     case "IN_REVIEW":
     case "WAITING_FOR_REVIEW":
-      return { msg: "🔍 Đang được Apple review", color: 3447003 };
+      return { msg: "🔍 App is under review by Apple", color: 3447003 };
 
     case "READY_FOR_REVIEW":
-      return { msg: "📤 Sẵn sàng gửi review", color: 15844367 };
+      return { msg: "📤 Ready for review submission", color: 15844367 };
 
     case "PROCESSING_FOR_APP_STORE":
-      return { msg: "⚙️ Apple đang xử lý build", color: 10181046 };
+      return {
+        msg: "⚙️ Processing for App Store distribution",
+        color: 10181046,
+      };
 
     case "REJECTED":
     case "METADATA_REJECTED":
     case "DEVELOPER_REJECTED":
-      return { msg: "❌ Bị Apple từ chối", color: 15158332 };
+      return { msg: "❌ App was rejected by Apple", color: 15158332 };
 
     case "INVALID_BINARY":
-      return { msg: "💣 Build lỗi (invalid binary)", color: 15158332 };
+      return {
+        msg: "💣 Invalid binary (build failed validation)",
+        color: 15158332,
+      };
 
     case "PENDING_DEVELOPER_RELEASE":
-      return { msg: "⏳ Chờ dev release", color: 15844367 };
+      return { msg: "⏳ Awaiting developer release", color: 15844367 };
 
     case "PENDING_APPLE_RELEASE":
-      return { msg: "⏳ Apple sẽ tự động release", color: 15844367 };
+      return {
+        msg: "⏳ Scheduled for automatic App Store release",
+        color: 15844367,
+      };
 
     default:
       return { msg: `ℹ️ ${state}`, color: 3447003 };
@@ -118,9 +127,9 @@ app.post("/apple-webhook", async (req, res) => {
     if (type === "webhookPingCreated") {
       embed.title = "🔍 Webhook Test";
       embed.fields = [
-        { name: "Status", value: "✅ OK", inline: true },
+        { name: "Status", value: "✅ Webhook is working", inline: true },
         {
-          name: "Time",
+          name: "Timestamp",
           value: attributes.timestamp || "N/A",
           inline: true,
         },
