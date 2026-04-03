@@ -30,7 +30,7 @@ async function refreshMapping() {
     const newMapping = {};
 
     rows?.forEach((row) => {
-      const appKey = row[0]?.trim().toLowerCase();
+      const appKey = normalizeKey(row[0]?.trim());
       const webhookUrl = row[1]?.trim();
       if (appKey && webhookUrl) {
         newMapping[appKey] = webhookUrl;
@@ -38,14 +38,25 @@ async function refreshMapping() {
     });
 
     webhookMapping = newMapping;
-    console.log("✅ Mapping:", Object.keys(webhookMapping));
+    // console.log("✅ Mapping:", Object.keys(webhookMapping));
   } catch (err) {
     console.error("❌ Google API:", err.message);
   }
 }
 
+function normalizeKey(str) {
+  return str?.toLowerCase().replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
+}
+
 setInterval(refreshMapping, 60000);
 refreshMapping();
+
+app.get("/refresh-sheet", async (req, res) => {
+  await refreshMapping();
+  res.send(
+    `✅ Updated successfully! Current App list: ${Object.keys(webhookMapping).join(", ")}`,
+  );
+});
 
 // =========================
 // 🎯 STATE MAPPING
@@ -101,8 +112,10 @@ app.post("/apple-webhook", async (req, res) => {
     let appKey = req.query.app;
     if (!appKey) return res.status(200).send("Missing app");
 
-    appKey = decodeURIComponent(appKey).replace(/-/g, " ").toLowerCase();
+    appKey = normalizeKey(decodeURIComponent(appKey));
     const discordWebhookUrl = webhookMapping[appKey];
+    console.log("discordWebhookUrl", discordWebhookUrl);
+    console.log("appKey", appKey);
     if (!discordWebhookUrl) return res.status(200).send("Not mapped");
 
     const payload = req.body;
@@ -114,6 +127,11 @@ app.post("/apple-webhook", async (req, res) => {
     const { type, attributes = {} } = payload.data;
 
     let embed = {
+      author: {
+        name: `🍎 App: ${appKey}`,
+        icon_url:
+          "https://upload.wikimedia.org/wikipedia/commons/f/fa/Apple_logo_black.svg",
+      },
       title: `🍎 ${appKey.toUpperCase()}`,
       color: 3447003,
       fields: [],
@@ -212,7 +230,11 @@ app.post("/apple-webhook", async (req, res) => {
 
     res.status(200).send("OK");
   } catch (err) {
-    console.error("❌ Webhook error:", err.message);
+    if (err.response) {
+      console.error("❌ Discord API Error:", err.response.data);
+    } else {
+      console.error("❌ System Error:", err.message);
+    }
     res.status(200).send("Error");
   }
 });
